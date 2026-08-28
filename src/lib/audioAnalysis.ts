@@ -151,106 +151,142 @@ function estimateF0Float(samples: Float32Array, sampleRate: number): number {
 }
 
 // ── Feature scoring (higher = more natural/human) ──────
+// AI cloned voices are characterized by: very low jitter (too stable
+// pitch), very low shimmer (too stable amplitude), very high HNR
+// (suspiciously clean), very low spectral flux (over-smoothed),
+// restricted subband energy (missing high frequencies), low prosody
+// variation (monotone), and compressed spectral entropy.
+// Real human voices have natural imperfections in all these areas.
+// The scoring below sharply rewards human-range values and sharply
+// penalizes AI-range values, with a steep transition between them.
 
 function scoreFlatness(flatness: number): number {
-  // Natural speech ~0.05-0.30 — generous natural zone
-  if (flatness < 0.02) return 30;
-  if (flatness > 0.55) return 25;
-  if (flatness >= 0.04 && flatness <= 0.32) return clampScore(88 - Math.abs(flatness - 0.15) * 120);
-  return clampScore(55 - Math.abs(flatness - 0.15) * 200);
+  // Human speech: 0.10-0.28 (natural mix of harmonics + noise)
+  // AI voice: < 0.05 (too synthetic/harmonic) or > 0.40 (noise artifacts)
+  if (flatness >= 0.08 && flatness <= 0.30)
+    return clampScore(85 - Math.abs(flatness - 0.18) * 150);
+  if (flatness < 0.04) return 25; // Too harmonic = AI
+  if (flatness > 0.45) return 22; // Noise-like = AI artifact
+  return clampScore(45 - Math.abs(flatness - 0.18) * 200);
 }
 
 function scoreZCR(zcr: number): number {
-  // Natural speech ZCR 0.05-0.18 — wide natural band
+  // Human speech ZCR: 0.06-0.16
+  // AI voice: often extreme (very low or very high)
   const optimal = 0.11;
-  if (zcr >= 0.04 && zcr <= 0.20) return clampScore(88 - Math.abs(zcr - optimal) * 250);
-  return clampScore(40 - Math.abs(zcr - optimal) * 400);
+  if (zcr >= 0.05 && zcr <= 0.18)
+    return clampScore(82 - Math.abs(zcr - optimal) * 300);
+  return clampScore(35 - Math.abs(zcr - optimal) * 400);
 }
 
 function scoreCentroid(centroid: number): number {
-  // Natural speech centroid 900-2800 Hz — wide natural band
-  const optimal = 1700;
-  if (centroid >= 800 && centroid <= 3200) return clampScore(88 - (Math.abs(centroid - optimal) / optimal) * 30);
-  return clampScore(35 - (Math.abs(centroid - optimal) / optimal) * 40);
+  // Human speech centroid: 1200-2600 Hz
+  // AI voice: often shifted (too low = muffled, too high = metallic)
+  const optimal = 1800;
+  if (centroid >= 1000 && centroid <= 3000)
+    return clampScore(82 - (Math.abs(centroid - optimal) / optimal) * 35);
+  return clampScore(30 - (Math.abs(centroid - optimal) / optimal) * 40);
 }
 
 function scoreFlux(flux: number): number {
-  // Natural speech flux 0.015-0.10 — wide natural band
-  const optimal = 0.045;
-  if (flux >= 0.01 && flux <= 0.12) return clampScore(90 - Math.abs(flux - optimal) * 350);
-  if (flux < 0.005) return 25; // Over-smoothed = AI
-  return clampScore(30 - (flux - 0.12) * 300);
+  // Human speech flux: 0.025-0.08 (natural frame-to-frame variation)
+  // AI voice: < 0.012 (over-smoothed, frozen spectrum)
+  if (flux >= 0.02 && flux <= 0.10)
+    return clampScore(85 - Math.abs(flux - 0.05) * 400);
+  if (flux < 0.008) return 20; // Over-smoothed = AI
+  return clampScore(30 - (flux - 0.10) * 350);
 }
 
 function scoreRollOff(rollOff: number): number {
-  // Natural speech roll-off 2000-5000 Hz — wide natural band
+  // Human speech roll-off: 2200-4800 Hz
+  // AI voice: often restricted < 1500 or artificially high > 6000
   const optimal = 3500;
-  if (rollOff >= 1500 && rollOff <= 6000) return clampScore(88 - (Math.abs(rollOff - optimal) / optimal) * 25);
-  return clampScore(35 - (Math.abs(rollOff - optimal) / optimal) * 40);
+  if (rollOff >= 1800 && rollOff <= 5500)
+    return clampScore(82 - (Math.abs(rollOff - optimal) / optimal) * 30);
+  return clampScore(30 - (Math.abs(rollOff - optimal) / optimal) * 40);
 }
 
 function scoreJitter(jitter: number): number {
-  // Natural jitter 0.005-0.04 — wide natural band
-  if (jitter < 0.002) return 22; // Too stable = synthetic
-  if (jitter <= 0.045) return clampScore(90 - Math.abs(jitter - 0.015) * 500);
-  return clampScore(35 - (jitter - 0.045) * 600);
+  // Human jitter: 0.008-0.03 (natural pitch wobble)
+  // AI voice: < 0.004 (frozen pitch, too stable)
+  if (jitter < 0.002) return 18; // Frozen = AI
+  if (jitter < 0.005) return 28; // Very stable = AI
+  if (jitter <= 0.035)
+    return clampScore(88 - Math.abs(jitter - 0.015) * 600);
+  return clampScore(30 - (jitter - 0.035) * 700);
 }
 
 function scoreShimmer(shimmer: number): number {
-  // Natural shimmer 0.03-0.20 — wide natural band
-  if (shimmer < 0.008) return 25; // Too stable = AI
-  if (shimmer > 0.5) return 25;
-  if (shimmer >= 0.02 && shimmer <= 0.25) return clampScore(88 - Math.abs(shimmer - 0.10) * 280);
-  return clampScore(35 - Math.abs(shimmer - 0.10) * 200);
+  // Human shimmer: 0.04-0.16 (natural amplitude variation)
+  // AI voice: < 0.015 (frozen amplitude, too stable)
+  if (shimmer < 0.008) return 18; // Frozen = AI
+  if (shimmer < 0.02) return 28; // Very stable = AI
+  if (shimmer > 0.45) return 22;
+  if (shimmer <= 0.22)
+    return clampScore(85 - Math.abs(shimmer - 0.10) * 350);
+  return clampScore(30 - Math.abs(shimmer - 0.10) * 200);
 }
 
 function scoreHNR(hnr: number): number {
-  // Natural voices: 12-32 dB — wide natural band
-  if (hnr > 42) return 28; // Suspiciously clean = AI
-  if (hnr < 4) return 30;
-  if (hnr >= 10 && hnr <= 36) return clampScore(88 - Math.abs(hnr - 22) * 2.5);
-  return clampScore(35 - Math.abs(hnr - 22) * 3);
+  // Human HNR: 14-26 dB (natural breath/noise component)
+  // AI voice: > 32 dB (suspiciously clean, no breath noise)
+  if (hnr > 38) return 18; // Suspiciously clean = AI
+  if (hnr > 30) return 28; // Very clean = likely AI
+  if (hnr < 3) return 25;
+  if (hnr <= 28)
+    return clampScore(85 - Math.abs(hnr - 20) * 3.5);
+  return clampScore(35 - Math.abs(hnr - 20) * 4);
 }
 
 function scoreEntropy(entropy: number): number {
-  // Natural speech entropy 0.4-0.85 — wide natural band
-  if (entropy >= 0.35 && entropy <= 0.90) return clampScore(88 - Math.abs(entropy - 0.65) * 120);
-  return clampScore(35 - Math.abs(entropy - 0.65) * 150);
+  // Human speech entropy: 0.55-0.85 (rich spectral diversity)
+  // AI voice: < 0.45 (compressed, limited spectral detail)
+  if (entropy >= 0.50 && entropy <= 0.90)
+    return clampScore(85 - Math.abs(entropy - 0.70) * 150);
+  if (entropy < 0.35) return 25; // Compressed = AI
+  return clampScore(35 - Math.abs(entropy - 0.70) * 180);
 }
 
 function scoreSubband(ratio: number): number {
-  // Natural high-freq ratio 0.10-0.40 — wide natural band
-  if (ratio < 0.05) return 28; // Restricted = AI
-  if (ratio > 0.6) return 30;
-  if (ratio >= 0.08 && ratio <= 0.48) return clampScore(88 - Math.abs(ratio - 0.25) * 160);
-  return clampScore(35 - Math.abs(ratio - 0.25) * 120);
+  // Human high-freq ratio: 0.12-0.35 (natural high-frequency content)
+  // AI voice: < 0.08 (restricted, missing high frequencies)
+  if (ratio < 0.06) return 20; // Restricted = AI
+  if (ratio < 0.10) return 30; // Low = likely AI
+  if (ratio > 0.55) return 25;
+  if (ratio <= 0.42)
+    return clampScore(85 - Math.abs(ratio - 0.22) * 200);
+  return clampScore(35 - Math.abs(ratio - 0.22) * 150);
 }
 
 function scoreProsody(prosodyVar: number): number {
-  // Natural prosody variation 0.15-0.55
-  if (prosodyVar >= 0.10 && prosodyVar <= 0.60) return clampScore(88 - Math.abs(prosodyVar - 0.30) * 120);
-  if (prosodyVar < 0.05) return 25; // Too monotone = AI
-  return clampScore(35 - (prosodyVar - 0.60) * 100);
+  // Human prosody variation: 0.15-0.50 (natural intonation changes)
+  // AI voice: < 0.08 (monotone, robotic)
+  if (prosodyVar < 0.05) return 18; // Monotone = AI
+  if (prosodyVar < 0.10) return 28; // Low variation = likely AI
+  if (prosodyVar <= 0.55)
+    return clampScore(85 - Math.abs(prosodyVar - 0.30) * 150);
+  return clampScore(35 - (prosodyVar - 0.55) * 120);
 }
 
-// Weighted naturalness blend
+// Weighted naturalness blend — weights emphasize the features
+// that most reliably distinguish AI voice from human voice.
 function computeNaturalness(scores: {
   flatness: number; flux: number; jitter: number; shimmer: number;
   hnr: number; entropy: number; subband: number; prosody: number;
   rollOff: number; centroid: number; zcr: number;
 }): number {
   return (
-    scores.flatness * 0.12 +
+    scores.jitter * 0.16 +
+    scores.shimmer * 0.14 +
+    scores.hnr * 0.14 +
     scores.flux * 0.14 +
-    scores.jitter * 0.12 +
-    scores.shimmer * 0.12 +
-    scores.hnr * 0.10 +
-    scores.entropy * 0.08 +
-    scores.subband * 0.10 +
-    scores.prosody * 0.10 +
-    scores.rollOff * 0.06 +
-    scores.centroid * 0.03 +
-    scores.zcr * 0.03
+    scores.prosody * 0.12 +
+    scores.subband * 0.08 +
+    scores.flatness * 0.08 +
+    scores.entropy * 0.06 +
+    scores.rollOff * 0.04 +
+    scores.centroid * 0.02 +
+    scores.zcr * 0.02
   );
 }
 
